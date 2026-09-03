@@ -99,6 +99,40 @@ def _build_frame_chunks(bgr_bytes):
     return out
 
 
+def prepare_frame_chunks(img):
+    """Convert a logical 640x180 image into the 90 protocol chunks used by
+    the ZC-360 framebuffer transport.
+
+    This contains no USB I/O and is shared by both the known-good PyUSB path
+    and the async libusb transport.
+    """
+    if img.size != (LOGICAL_W, LOGICAL_H):
+        img = img.resize((LOGICAL_W, LOGICAL_H))
+
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+
+    img = img.rotate(-90, expand=True)
+
+    r, g, b = img.split()
+    bgr_img = Image.merge("RGB", (b, g, r))
+
+    chunks = _build_frame_chunks(bgr_img.tobytes())
+
+    if FRAME_RECORDS_PER_WRITE == 8:
+        if len(chunks) != 90:
+            raise RuntimeError(
+                f"expected 90 ZC-360 framebuffer writes, got {len(chunks)}"
+            )
+
+        if any(len(chunk) != 4096 for chunk in chunks):
+            raise RuntimeError(
+                "expected all ZC-360 framebuffer writes to be 4096 bytes"
+            )
+
+    return chunks
+
+
 class FanPanel:
     """A single fan-panel display (native 180x640, push_image() takes 640x180 landscape)."""
 
@@ -162,14 +196,7 @@ class FanPanel:
         180x640 portrait buffer and BGR-converted.
         Returns True if a commit (cmd 88) was triggered, False if not,
         None if no interrupt response came back."""
-        if img.size != (LOGICAL_W, LOGICAL_H):
-            img = img.resize((LOGICAL_W, LOGICAL_H))
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        img = img.rotate(-90, expand=True)  # 640x180 -> 180x640 (native)
-        r, g, b = img.split()
-        bgr_img = Image.merge("RGB", (b, g, r))
-        chunks = _build_frame_chunks(bgr_img.tobytes())
+        chunks = prepare_frame_chunks(img)
         for buf in chunks:
             self.dev.write(EP_OUT, buf, timeout=3000)
         frame_gap_ms = float(

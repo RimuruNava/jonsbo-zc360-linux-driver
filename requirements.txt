@@ -2,3 +2,4 @@ pyusb
 pycryptodome
 Pillow
 psutil
+libusb1
