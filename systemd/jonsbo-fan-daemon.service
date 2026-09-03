@@ -1,0 +1,16 @@
+[Unit]
+Description=Jonsbo ZC-360 USB Owner (keeps all 3 panels claimed)
+After=graphical-session.target
+
+[Service]
+WorkingDirectory=%h/Projects/jonsbo-zc360-driver
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/Projects/jonsbo-zc360-driver/.venv/bin/python3 %h/Projects/jonsbo-zc360-driver/jonsbo_fan_daemon.py
+# Deliberately not on-failure: a crash-triggered auto-restart re-claims the
+# USB interfaces, which reliably wedges the panels on this hardware (only a
+# full physical power cycle recovers it). Restart manually after checking
+# the panels aren't already wedged. See README.md.
+Restart=no
+
+[Install]
+WantedBy=default.target

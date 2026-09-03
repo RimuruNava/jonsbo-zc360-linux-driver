@@ -1,0 +1,32 @@
+{
+  "refresh_seconds": 2.0,
+  "socket_timeout_seconds": 120.0,
+  "gpu_device": "auto",
+  "display": {
+    "mode": "telemetry",
+    "source": "",
+    "layout": "span",
+    "fit": "cover",
+    "frames_per_second": 8.0
+  },
+  "panels": [
+    {
+      "index": 0,
+      "serial": "YOUR_PANEL_SERIAL_0",
+      "role": "processor",
+      "position": "unassigned"
+    },
+    {
+      "index": 1,
+      "serial": "YOUR_PANEL_SERIAL_1",
+      "role": "graphics",
+      "position": "unassigned"
+    },
+    {
+      "index": 2,
+      "serial": "YOUR_PANEL_SERIAL_2",
+      "role": "system",
+      "position": "unassigned"
+    }
+  ]
+}

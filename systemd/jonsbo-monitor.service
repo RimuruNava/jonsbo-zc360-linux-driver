@@ -1,0 +1,16 @@
+[Unit]
+Description=Jonsbo TF3 Display Monitor (renders dashboard, talks to jonsbo-fan-daemon)
+After=graphical-session.target jonsbo-fan-daemon.service
+# Deliberately no Wants=/Requires=: starting a renderer must never launch a
+# second USB owner beside an already-running foreground daemon.
+
+[Service]
+WorkingDirectory=%h/Projects/jonsbo-zc360-driver
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/Projects/jonsbo-zc360-driver/.venv/bin/python3 %h/Projects/jonsbo-zc360-driver/jonsbo_monitor.py
+# Safe to restart freely - this process never claims fan-panel USB
+# interfaces directly, only jonsbo-fan-daemon.service does. See README.md.
+Restart=no
+
+[Install]
+WantedBy=default.target

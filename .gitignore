@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local experimental backups
+*.before-*
+*.bak
+
+# Packet captures
+*.pcap
+*.pcapng
+
+# Editor / OS junk
+.DS_Store
+*.swp
+*~
+
+# Machine-specific panel mapping
+zc360-layout.json
