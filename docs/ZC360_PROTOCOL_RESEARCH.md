@@ -292,3 +292,63 @@ controller-state discoveries, Windows capture analysis, and the eventual
 asynchronous libusb prototype—see:
 
 [`ZC360_EXPERIMENT_LOG.md`](ZC360_EXPERIMENT_LOG.md)
+
+## Production daemon validation — 2026-09-03
+
+The true asynchronous transport has now been migrated from the standalone
+probe into the long-lived production daemon.
+
+The production ownership model is:
+
+```text
+udev access gate
+    ↓
+discover all three controllers
+    ↓
+claim all three once with python-libusb1
+    ↓
+initialize all three
+    ↓
+synchronous interleaved startup warmup
+on those same handles
+    ↓
+persistent daemon ownership
+    ↓
+complete three-panel packets use async triplets
+```
+
+There is no PyUSB-to-libusb ownership handoff in the production session.
+
+Startup and partial-panel updates remain synchronous, but they use the same
+persistent libusb1 handles. Complete three-panel packets use the proven async
+model:
+
+- one OUT transfer outstanding per physical panel;
+- callback immediately re-arms that panel's next 4096-byte chunk;
+- framebuffer barrier after all 90 writes on all three panels;
+- approximately 12.7 ms controller quiet period;
+- all three status IN transfers submitted before event processing;
+- status barrier before the next triplet.
+
+A clean fresh-power production run showed steady-state USB triplets typically
+around **59-61 ms**, equivalent to approximately **16.5-16.8 FPS** at the
+transport layer.
+
+Every sampled steady-state controller response remained:
+
+```text
+0x62 / 0x62 / 0x62
+```
+
+The system then ran for roughly one hour during normal desktop use and gaming
+without visible stale rectangles, old boot-logo fragments, frozen panels,
+shaking, or obvious desynchronization.
+
+This is stronger evidence than the original one-shot async probe: the same
+transport now survives continuous operation inside the persistent ownership
+architecture.
+
+The renderer currently reaches roughly **13.5 FPS**, so the remaining
+performance gap is above the USB transport layer rather than in the controller
+scheduler itself. Future optimization should pipeline rendering/encoding above
+the daemon while preserving exactly one complete USB triplet in flight.

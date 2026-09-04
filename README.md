@@ -26,11 +26,21 @@ TF3 360, TF3-360SCB, TF3-360SCW, TURZX-338inch-r, USB `43a8:0e61`.
 
 > **Current state**
 >
-> The existing persistent PyUSB daemon is the known-good baseline.
+> The production daemon now owns all three ZC-360 controllers through
+> `python-libusb1` from the first USB claim until shutdown.
 >
-> A genuine asynchronous `libusb` / `python-libusb1` three-panel transport has
-> now reproduced the official Windows application's roughly 16 FPS cadence
-> cleanly and is the current production direction.
+> Initialization and startup warmup stay on the conservative synchronous path
+> using those same persistent handles. Complete three-panel frames use the
+> genuine asynchronous transport reproduced from the official Windows
+> scheduling model.
+>
+> On the tested three-panel setup, steady-state USB triplets take roughly
+> **59-61 ms**, or about **16.5-16.8 FPS** at the transport layer, with all
+> three controllers consistently returning `0x62`.
+>
+> A clean fresh-power production run remained visually stable for roughly an
+> hour of normal use and gaming: no stale borders, frozen panels, shaking, or
+> surviving framebuffer fragments were observed.
 >
 > The older threaded PyUSB "vendor triplet" experiment is retained for
 > research history but is explicitly unsafe.
@@ -339,7 +349,7 @@ Exactly one asynchronous gray triplet was then sent.
 All three displays became visually uniform gray with no obvious surviving
 RGB region or factory-logo residue.
 
-This is the current preferred production transport direction.
+This transport is now integrated into the persistent production daemon.
 
 ---
 

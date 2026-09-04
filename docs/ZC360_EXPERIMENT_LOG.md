@@ -1135,3 +1135,114 @@ release/reclaim behavior.
 
 Conversely, true asynchronous three-device transmission is possible and is
 used by the official application.
+
+## 35. Production daemon migration and sustained validation
+
+The standalone true-async result was promoted into the real persistent daemon.
+
+### Migration
+
+The production path now uses `python-libusb1` for controller ownership from
+the first claim until final shutdown.
+
+Changes included:
+
+- `libusb1` added to `requirements.txt`;
+- framebuffer preparation extracted into shared `prepare_frame_chunks()`;
+- `zc360_async_transport.py` created from the known-good probe transport;
+- daemon no longer selects the threaded `vendor_triplet` experiment;
+- daemon no longer owns panels through PyUSB;
+- all three panels are still claimed before any are initialized;
+- initialization and warmup remain synchronous on the same libusb1 handles;
+- complete three-panel packets use genuine asynchronous transfers;
+- partial-panel packets remain on the conservative synchronous path.
+
+The important ownership sequence is now:
+
+```text
+libusb1 claim
+    ↓
+libusb1 init / warmup
+    ↓
+libusb1 async steady state
+    ↓
+release only at daemon shutdown
+```
+
+### First clean production boot
+
+The old daemon and renderer were stopped and the machine/controller was given
+a full physical power flush.
+
+The new daemon then received exactly one fresh claim cycle.
+
+All three startup ownership frames appeared cleanly with no factory-logo
+fragments or partial framebuffer corruption.
+
+Command 56 produced `LIBUSB_ERROR_TIMEOUT [-7]` on all three panels during
+initialization. This matched the previously observed benign cmd56 timeout and
+was intentionally tolerated.
+
+### Continuous playback
+
+Representative steady-state output:
+
+```text
+USB PERF packet≈61-63ms
+panels=3
+mode=async-triplet
+usb≈59-61ms
+status=0x62/0x62/0x62
+```
+
+This corresponds to roughly:
+
+```text
+~59.8 ms per USB triplet
+≈16.7 FPS transport rate
+```
+
+The renderer itself reported approximately:
+
+```text
+actual≈13.5-13.6fps
+png≈6-7ms
+socket+usb≈65ms
+```
+
+The first renderer packet after the displays had been idle triggered the
+existing 30-cycle synchronous stale-panel warmup and therefore took roughly
+five seconds. This was expected and was not an async transport failure.
+
+### Sustained validation
+
+The machine was then used normally, including gaming, for roughly one hour.
+
+No visible:
+
+- stale rectangular regions;
+- old Jonsbo boot-logo fragments;
+- frozen panels;
+- shaking;
+- panel desynchronization;
+- partial-frame borders
+
+were observed.
+
+Steady-state logs continued to report `0x62/0x62/0x62` and USB triplets
+remained around the expected 59-61 ms range.
+
+This is the first fast three-panel implementation in the project that both
+matches the official Windows scheduling model and remains visually clean
+during sustained production use.
+
+### Conclusion
+
+The true libusb asynchronous implementation is now the production transport.
+
+The next performance problem is above the USB layer. The remaining gap between
+roughly 16.7 FPS transport capacity and roughly 13.5 FPS rendered playback
+comes from the serialized renderer → PNG → socket → USB pipeline.
+
+The proven USB scheduling should be left alone unless new evidence requires
+changing it.
