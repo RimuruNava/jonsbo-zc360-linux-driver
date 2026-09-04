@@ -292,9 +292,9 @@ def encode_fan_frames(images):
     buf = bytearray([len(images)])
 
     for idx, img in images.items():
-        bio = io.BytesIO()
-        img.save(bio, "PNG", compress_level=0)
-        data = bio.getvalue()
+        rgb = img.convert("RGB")
+        header = f"P6\n{rgb.width} {rgb.height}\n255\n".encode("ascii")
+        data = header + rgb.tobytes()
         buf += struct.pack(">BI", idx, len(data)) + data
 
     packet = bytes(buf)

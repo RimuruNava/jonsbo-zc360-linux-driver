@@ -82,7 +82,7 @@ class PerformanceWindow:
             f"actual={count / elapsed:.2f}fps "
             f"decode={self.decode_seconds * 1000 / count:.1f}ms "
             f"compose={self.compose_seconds * 1000 / count:.1f}ms "
-            f"png={self.encode_seconds * 1000 / count:.1f}ms "
+            f"encode={self.encode_seconds * 1000 / count:.1f}ms "
             f"socket+usb={self.transfer_seconds * 1000 / count:.1f}ms "
             f"payload={self.payload_bytes / count / 1024:.0f}KiB"
         )
