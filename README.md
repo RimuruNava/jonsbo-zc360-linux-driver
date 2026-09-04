@@ -515,3 +515,45 @@ Not affiliated with, supported by, or endorsed by Jonsbo.
 
 Use it at your own risk — and, seriously, if you're experimenting with USB
 ownership, be prepared to physically power-cycle the displays.
+
+## Validated production state
+
+The current Linux path is now considered production-ready for the ZC-360 fan LCDs.
+
+Validated behaviour:
+
+- one long-lived `python-libusb1` daemon owns all three panels from first claim until shutdown
+- complete three-panel updates use the vendor-style concurrent async schedule
+- steady USB time is typically about **59–61 ms** per three-panel framebuffer/status cycle
+- end-to-end displayed throughput is typically about **15.8–15.9 FPS**
+- all three controllers remain in steady-state status `0x62/0x62/0x62`
+- the renderer uses a **latest-frame-wins** pipeline: one packet may be in flight while one newer packet is replaceable, so latency does not build up if rendering gets ahead of USB
+- the local socket path uses a tiny PPM/raw-RGB container instead of PNG; encode time is typically about **0.6–0.9 ms** for the full three-panel payload
+- renderer idle time no longer causes a multi-second "re-warm" delay; persistent USB ownership is sufficient to keep the panels ready
+- both the daemon and renderer are enabled for automatic startup
+
+### Cold-boot lifecycle
+
+On a real cold boot / physical power cycle, the observed sequence is:
+
+1. the panel firmware briefly shows the factory **Jonsbo** logo
+2. the Linux USB owner claims and initializes the three controllers
+3. the Lucille startup/telemetry surface appears and remains visible at the login screen
+4. after the user logs in, the renderer starts as part of the user session
+5. the configured media loops replace the telemetry surface roughly **2–3 seconds** later
+
+That sequence is also a useful diagnostic:
+
+- Jonsbo logo never changes -> the USB owner probably did not take control
+- telemetry appears but media never starts -> the USB owner is alive; check the renderer/session side
+- media appears -> the complete stack is healthy
+
+### Known limitation: vertical tearing
+
+Motion can show a moving **vertical tear boundary**. Synthetic alternating full-screen colour tests confirm that the split is vertical and that its position can shift left/right rather than remaining fixed.
+
+The current evidence is consistent with the controller scanning a framebuffer while that same framebuffer is being updated, but no exposed per-frame VSYNC/present/double-buffer command has been identified. A fixed 15 Hz cadence test did not materially change the behaviour.
+
+The native LCD refresh rate itself remains **unknown**. The measured ~15.8–15.9 FPS figure is the confirmed end-to-end framebuffer update rate of the vendor-compatible USB path, not a claim about the panel's physical refresh rate.
+
+Unless new protocol evidence appears (or the official Windows software proves materially more tear-free), the low-level transport should be treated as complete and the tearing documented as a controller/display-path limitation rather than "fixed" by sacrificing the stable async architecture.

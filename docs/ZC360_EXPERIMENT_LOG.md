@@ -1246,3 +1246,135 @@ comes from the serialized renderer → PNG → socket → USB pipeline.
 
 The proven USB scheduling should be left alone unless new evidence requires
 changing it.
+
+## 36. Final pipeline, idle, and cold-boot validation
+
+After the async USB transport had already survived several hours of normal use, the remaining application-side bottlenecks and lifecycle issues were addressed.
+
+### Latest-frame renderer pipeline
+
+The original renderer synchronously performed:
+
+```text
+decode -> compose -> PNG encode -> socket -> USB -> ACK -> next frame
+```
+
+That limited delivered media to roughly 13.3–13.6 FPS even though the async USB transport itself could complete a triplet in about 59–61 ms.
+
+The renderer was changed to use one background sender with a single replaceable pending frame:
+
+```text
+render thread:
+decode -> compose -> encode -> latest packet slot
+
+sender thread:
+latest packet -> socket -> daemon -> USB -> ACK
+```
+
+There is still exactly one socket/USB triplet in flight. If rendering gets ahead, the not-yet-sent pending frame is replaced by the newest frame rather than queued.
+
+Measured result with PNG level 0:
+
+```text
+produced:   ~19.3 FPS
+sent:       ~15.2–15.4 FPS
+replaced:   ~4 FPS
+socket+USB: ~65 ms
+```
+
+No stale regions, freezes, shaking, or controller-status regressions were observed.
+
+### PNG removal
+
+PNG compression level 0 still cost roughly 6.5–7 ms while producing a payload almost identical in size to raw RGB (~1014 KiB per triplet).
+
+The local socket container was changed to PPM/raw RGB. Pillow on the daemon side can decode this directly, so the USB daemon and protocol did not need to change.
+
+Measured steady state:
+
+```text
+encode:     ~0.6–0.9 ms
+payload:    ~1013 KiB
+socket+USB: ~62–63 ms
+sent:       ~15.8–15.9 FPS
+USB:        ~59–61 ms
+status:     0x62/0x62/0x62
+```
+
+At this point renderer-side encoding is no longer a meaningful bottleneck.
+
+### Stale warmup removal
+
+The daemon previously considered a panel stale after 30 seconds without a client frame and repeated the same framebuffer synchronously for 30 warmup cycles. This produced a roughly 5-second first-packet delay after renderer idle/restart.
+
+With persistent USB ownership already proven stable, the idle-time stale condition was removed. Warmup now applies only to a panel that has not yet been warmed during the daemon lifetime.
+
+Validation:
+
+- stop renderer
+- wait more than 30 seconds
+- start renderer
+- first packets immediately use `mode=async-triplet`
+- packet time remains roughly 61–63 ms
+- status remains `0x62/0x62/0x62`
+- no `serial-warmup` occurs
+
+The old ~5-second restart hitch is therefore resolved.
+
+### Automatic startup / physical power-cycle validation
+
+Both user services were enabled:
+
+```text
+jonsbo-fan-daemon.service        enabled
+lucille-zc360-renderer.service   enabled
+```
+
+A physical power flush / cold boot was then performed.
+
+Observed boot lifecycle:
+
+```text
+factory Jonsbo logo
+ -> Linux USB owner takes control
+ -> Lucille telemetry/startup surface appears at the login screen
+ -> user logs in
+ -> renderer starts automatically
+ -> three configured media loops appear about 2–3 seconds later
+```
+
+Both services were active without manual intervention.
+
+### Tearing investigation
+
+The remaining visible defect is vertical tearing.
+
+A full-frame alternating cyan/magenta probe showed a vertical old/new-frame split whose position moves left and right rather than remaining fixed.
+
+A fixed 15.000 Hz cadence experiment did not materially change the behaviour. This makes a simple host-frequency mismatch less likely as the complete explanation.
+
+Current interpretation:
+
+- the controller may expose a framebuffer that is scanned while being overwritten
+- no exposed double-buffer / VSYNC / present primitive has been found
+- the logical-to-native 90-degree framebuffer rotation is consistent with a native progressive boundary appearing vertical on the physical landscape panel
+- native LCD refresh rate is still unknown
+- ~15.8–15.9 FPS is the confirmed vendor-compatible framebuffer-update rate, not a measured LCD refresh rate
+
+Unless new evidence from the official Windows software or another protocol mode appears, the tearing is now treated as a known controller/display-path limitation rather than a reason to destabilize the proven async transport.
+
+### Final low-level status
+
+```text
+persistent USB ownership        PASS
+three-panel async transport     PASS
+steady 0x62/0x62/0x62 status    PASS
+hours-long sustained use        PASS
+latest-frame renderer pipeline  PASS
+~15.8–15.9 FPS delivered        PASS
+idle renderer restart           PASS
+automatic cold-boot startup     PASS
+vertical tearing                KNOWN LIMITATION
+```
+
+The low-level ZC-360 driver architecture is considered complete at this point. Future work such as media cropping/framing, configuration UI, and richer shell integration belongs above the transport layer.

@@ -352,3 +352,87 @@ The renderer currently reaches roughly **13.5 FPS**, so the remaining
 performance gap is above the USB transport layer rather than in the controller
 scheduler itself. Future optimization should pipeline rendering/encoding above
 the daemon while preserving exactly one complete USB triplet in flight.
+
+## Final production validation
+
+The production architecture has now been validated through sustained use, cold boots, renderer restarts, and idle periods.
+
+### Final architecture
+
+```text
+session renderer
+    |
+    |  local Unix socket
+    |  latest-frame-wins
+    |  PPM/raw RGB payload
+    v
+persistent ZC-360 daemon
+    |
+    |  one libusb1 ownership lifetime
+    |  one complete triplet in flight
+    v
+three ZC-360 controllers
+```
+
+The daemon remains the only USB owner. The renderer can be restarted independently without releasing or reclaiming any USB interface.
+
+For full three-panel packets, the daemon uses the reproduced vendor-style async schedule:
+
+1. one 4096-byte OUT transfer outstanding per panel
+2. callback-driven requeue of the next 4096-byte chunk for that same panel
+3. all three panels progress concurrently
+4. framebuffer barrier
+5. approximately 12.7 ms quiet gap
+6. three status IN transfers submitted before event handling
+7. status barrier
+8. next frame
+
+### Final measured steady state
+
+```text
+USB framebuffer/status cycle:  ~59–61 ms
+daemon packet time:            ~61–63 ms
+renderer encode time:          ~0.6–0.9 ms
+renderer delivered rate:       ~15.8–15.9 FPS
+renderer production rate:      ~19 FPS
+controller status:             0x62/0x62/0x62
+socket payload:                ~1013 KiB / triplet
+```
+
+The renderer intentionally produces faster than USB can consume. A single replaceable pending frame prevents queue buildup while allowing decode/compose/encode work to overlap the previous socket/USB transaction.
+
+### Idle behaviour
+
+The older daemon treated more than 30 seconds without a frame as a "stale" controller and performed 30 synchronous warmup cycles before resuming normal updates. With persistent libusb1 ownership this proved unnecessary.
+
+After removing the idle-time stale trigger, a renderer restart after more than 30 seconds of inactivity resumed directly with the normal async path at roughly 61–63 ms per packet and steady `0x62/0x62/0x62` status. No multi-second warmup was required.
+
+### Cold-boot behaviour
+
+A fresh physical power cycle was tested with both systemd user services enabled.
+
+Observed sequence:
+
+```text
+power on
+ -> factory Jonsbo logo
+ -> daemon claims/initializes panels
+ -> Lucille telemetry/startup surface at login screen
+ -> user login
+ -> renderer starts automatically
+ -> configured media appears after ~2–3 seconds
+```
+
+No manual service start was required.
+
+### Vertical tearing
+
+A remaining visual limitation is a moving vertical tear boundary during motion. Alternating solid cyan/magenta full-frame tests made the boundary easy to observe; its horizontal position shifts rather than being fixed to one framebuffer chunk.
+
+Because the logical 640x180 image is rotated into the controller's native 180x640 framebuffer before transfer, a progressive native-row update maps naturally to a vertical boundary in the physical landscape view.
+
+A fixed 15.000 Hz host cadence did not materially change the tearing. No per-frame buffer-swap, VSYNC, or "present" command has been identified in the known protocol.
+
+This supports, but does not prove, an in-place framebuffer / unsynchronised scanout explanation. The LCD's native physical refresh rate remains unknown.
+
+The measured ~15.8–15.9 FPS should therefore be documented as the maximum confirmed **framebuffer update throughput of the vendor-compatible path**, not the LCD panel refresh rate.
