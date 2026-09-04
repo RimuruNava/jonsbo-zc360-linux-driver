@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,6 +87,155 @@ class PerformanceWindow:
             f"payload={self.payload_bytes / count / 1024:.0f}KiB"
         )
         self.reset(now)
+
+
+class LatestPacketSender:
+    """One in-flight daemon request plus one replaceable pending packet."""
+
+    def __init__(self, send_packet, timeout: float):
+        self.send_packet = send_packet
+        self.timeout = timeout
+        self.cv = threading.Condition()
+        self.pending = None
+        self.stopping = False
+        self.performance = PerformanceWindow()
+        self.performance.reset()
+        self.performance_lock = threading.Lock()
+        self.produced = 0
+        self.sent = 0
+        self.replaced = 0
+        self.pipe_started = time.monotonic()
+        self.logged_error = None
+        self.thread = threading.Thread(
+            target=self._run,
+            name="zc360-latest-packet-sender",
+            daemon=True,
+        )
+
+    def start(self):
+        self.thread.start()
+        print(
+            "Pipeline: latest-frame sender enabled "
+            "(one packet in flight, one replaceable pending packet)"
+        )
+
+    def reset_performance(self):
+        with self.performance_lock:
+            self.performance.reset()
+        with self.cv:
+            self.produced = 0
+            self.sent = 0
+            self.replaced = 0
+            self.pipe_started = time.monotonic()
+
+    def submit(
+        self,
+        packet: bytes,
+        decode_seconds: float,
+        compose_seconds: float,
+        encode_seconds: float,
+        payload_bytes: int,
+        media_active: bool,
+    ):
+        item = (
+            packet,
+            decode_seconds,
+            compose_seconds,
+            encode_seconds,
+            payload_bytes,
+            media_active,
+        )
+        with self.cv:
+            if self.pending is not None:
+                self.replaced += 1
+            self.pending = item
+            self.produced += 1
+            self.cv.notify()
+
+    def _report_pipeline_if_ready(self, media_active: bool):
+        if not media_active:
+            return
+        now = time.monotonic()
+        with self.cv:
+            elapsed = now - self.pipe_started
+            if elapsed < 5.0:
+                return
+            produced = self.produced
+            sent = self.sent
+            replaced = self.replaced
+            pending = self.pending is not None
+            self.produced = 0
+            self.sent = 0
+            self.replaced = 0
+            self.pipe_started = now
+
+        print(
+            "PIPE PERF "
+            f"produced={produced / elapsed:.2f}fps "
+            f"sent={sent / elapsed:.2f}fps "
+            f"replaced={replaced / elapsed:.2f}fps "
+            f"pending={1 if pending else 0}"
+        )
+
+    def _run(self):
+        while True:
+            with self.cv:
+                while self.pending is None and not self.stopping:
+                    self.cv.wait()
+                if self.stopping:
+                    return
+                (
+                    packet,
+                    decode_seconds,
+                    compose_seconds,
+                    encode_seconds,
+                    payload_bytes,
+                    media_active,
+                ) = self.pending
+                self.pending = None
+
+            try:
+                transport = self.send_packet(
+                    packet,
+                    timeout=self.timeout,
+                )
+                transport["encode_seconds"] = encode_seconds
+                transport["payload_bytes"] = payload_bytes
+
+                with self.performance_lock:
+                    self.performance.add(
+                        decode_seconds,
+                        compose_seconds,
+                        transport,
+                    )
+                    self.performance.report_if_ready(media_active)
+
+                with self.cv:
+                    self.sent += 1
+
+                self.logged_error = None
+
+            except Exception as exc:
+                message = str(exc)
+                if message != self.logged_error:
+                    print(f"Surface waiting for USB owner: {message}")
+                    self.logged_error = message
+
+            self._report_pipeline_if_ready(media_active)
+
+    def stop(self):
+        with self.cv:
+            self.stopping = True
+            self.pending = None
+            self.cv.notify_all()
+
+        self.thread.join(timeout=2.0)
+
+        if self.thread.is_alive():
+            print(
+                "Latest-frame sender is still blocked; "
+                "leaving its daemon thread to exit with the renderer."
+            )
 
 
 def fit_image(image: Image.Image, size: tuple[int, int], mode: str) -> Image.Image:
@@ -405,7 +555,10 @@ def main():
 
     try:
         import psutil
-        from jonsbo_fan_lib import send_fan_frames
+        from jonsbo_fan_lib import (
+            encode_fan_frames,
+            send_fan_packet,
+        )
     except ImportError as exc:
         raise SystemExit(f"live surface dependency missing: {exc}") from exc
 
@@ -419,11 +572,14 @@ def main():
     last_metrics = 0.0
     metrics = collector.collect()
     history.push(metrics)
-    logged_error = None
+    logged_submit_error = None
     logged_media_error = None
     timeout = max(5.0, float(config.get("socket_timeout_seconds", 120.0)))
-    performance = PerformanceWindow()
-    performance.reset()
+    sender = LatestPacketSender(
+        send_fan_packet,
+        timeout,
+    )
+    sender.start()
     print("Lucille ZC-360 unified surface - media + shell events + diagnostics")
     print(f"State: {state_path()}")
 
@@ -464,7 +620,7 @@ def main():
                             current_source = open_source(Path(state["source"]), layout, fit, fps)
                         current_key = key
                         logged_media_error = None
-                        performance.reset()
+                        sender.reset_performance()
                         if layout == "panels":
                             print("Media: three independent left / centre / right loops")
                         else:
@@ -535,21 +691,31 @@ def main():
                 else:
                     send_images = images
 
-                transport = send_fan_frames(send_images, timeout=timeout)
-                performance.add(decode_seconds, compose_seconds, transport)
-                performance.report_if_ready(media_ready)
-                logged_error = None
+                packet, encode_metrics = encode_fan_frames(send_images)
+
+                sender.submit(
+                    packet,
+                    decode_seconds,
+                    compose_seconds,
+                    float(encode_metrics.get("encode_seconds", 0.0)),
+                    int(encode_metrics.get("payload_bytes", len(packet))),
+                    media_ready,
+                )
+                logged_submit_error = None
+
             except Exception as exc:
                 message = str(exc)
-                if message != logged_error:
-                    print(f"Surface waiting for USB owner: {message}")
-                    logged_error = message
+                if message != logged_submit_error:
+                    print(f"Surface frame submit failed: {message}")
+                    logged_submit_error = message
+
             time.sleep(max(0.0, delay - (time.monotonic() - started)))
     except KeyboardInterrupt:
         print("\nSurface stopped; USB owner remains running.")
     finally:
         if current_source:
             current_source.close()
+        sender.stop()
 
 
 if __name__ == "__main__":

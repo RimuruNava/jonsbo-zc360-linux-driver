@@ -280,35 +280,56 @@ def install_sigterm_handler():
     return shutdown_requested
 
 
-def send_fan_frames(images, timeout=120.0):
-    """Client helper for talking to jonsbo_fan_daemon.py: sends already
-    rendered panel images over the Unix socket instead of claiming the
-    panels directly. This means the renderer/client process never touches
-    USB directly and can be restarted as often as needed without triggering
-    a claim/release cycle on the panels (every claim/release cycle across
-    multiple panels risks wedging them - see README.md).
+def encode_fan_frames(images):
+    """Encode a panel-image dict into one daemon socket packet.
 
-    images: dict idx->PIL.Image (idx as returned by find_panels()). Raises
-    on connection errors - the caller should catch this (the daemon might
-    not be running)."""
+    This performs PNG work only. It does not open the Unix socket and cannot
+    touch USB. Keeping encoding separate lets the renderer prepare the next
+    frame while the previous packet is still being transmitted by another
+    thread.
+    """
     encode_started = time.monotonic()
     buf = bytearray([len(images)])
+
     for idx, img in images.items():
         bio = io.BytesIO()
         img.save(bio, "PNG", compress_level=0)
         data = bio.getvalue()
         buf += struct.pack(">BI", idx, len(data)) + data
-    encode_seconds = time.monotonic() - encode_started
+
+    packet = bytes(buf)
+
+    return packet, {
+        "encode_seconds": time.monotonic() - encode_started,
+        "payload_bytes": len(packet),
+    }
+
+
+def send_fan_packet(packet, timeout=120.0):
+    """Send one already-encoded daemon packet and wait for its ACK."""
     transfer_started = time.monotonic()
+
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.settimeout(timeout)
         s.connect(SOCK_PATH)
-        s.sendall(bytes(buf))
+        s.sendall(packet)
         acknowledgement = s.recv(1)
+
         if acknowledgement != b"\x01":
             raise RuntimeError("fan daemon returned no acknowledgement")
+
     return {
-        "encode_seconds": encode_seconds,
         "transfer_seconds": time.monotonic() - transfer_started,
-        "payload_bytes": len(buf),
     }
+
+
+def send_fan_frames(images, timeout=120.0):
+    """Compatibility helper preserving the original synchronous API."""
+    packet, metrics = encode_fan_frames(images)
+    metrics.update(
+        send_fan_packet(
+            packet,
+            timeout=timeout,
+        )
+    )
+    return metrics
