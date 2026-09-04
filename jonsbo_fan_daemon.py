@@ -36,7 +36,6 @@ from jonsbo_fan_lib import (
 import zc360_async_transport as transport
 
 
-STALE_AFTER = 30
 WARMUP_CYCLES = 30
 WARMUP_DELAY = 0.05
 
@@ -227,7 +226,6 @@ def process_frames(
     handles,
     frames,
     warmed,
-    last_seen,
 ):
     """Process one client packet using the persistent libusb1 owner.
 
@@ -235,7 +233,6 @@ def process_frames(
     Partial packets remain on the conservative synchronous path.
     """
     packet_started = time.perf_counter()
-    now = time.time()
 
     valid_frames = {
         idx: img
@@ -246,9 +243,12 @@ def process_frames(
     if not valid_frames:
         return
 
+    # Persistent USB ownership means an idle panel does not become
+    # "cold" merely because no framebuffer has been sent recently.
+    # Only warm a panel that has not yet been warmed during this daemon
+    # lifetime.
     needs_warmup = any(
         not warmed[idx]
-        or (now - last_seen[idx]) > STALE_AFTER
         for idx in valid_frames
     )
 
@@ -338,11 +338,6 @@ def process_frames(
             )
 
         mode = "serial-partial " + ",".join(per_panel)
-
-    finished = time.time()
-
-    for idx in valid_frames:
-        last_seen[idx] = finished
 
     packet_ms = (
         time.perf_counter() - packet_started
@@ -438,7 +433,6 @@ def main():
         )
 
         warmed = [True] * len(handles)
-        last_seen = [time.time()] * len(handles)
 
         print(
             "All three panels initialized and warmed "
@@ -487,7 +481,6 @@ def main():
                         handles,
                         frames,
                         warmed,
-                        last_seen,
                     )
                 except Exception as exc:
                     print(
