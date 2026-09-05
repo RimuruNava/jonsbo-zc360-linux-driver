@@ -19,6 +19,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from lucille_zc360_control import read_state, state_path
+from zc360.dashboards import ExternalFrameSource, WeatherDashboard
 from lucille_zc360_renderer import (
     BG,
     MUTED,
@@ -258,6 +259,22 @@ def fit_image(image: Image.Image, size: tuple[int, int], mode: str) -> Image.Ima
     return canvas
 
 
+def normalize_framing(value=None):
+    value = value if isinstance(value, dict) else {}
+
+    def number(name, default):
+        try:
+            return float(value.get(name, default))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "focus_x": max(0.0, min(1.0, number("focus_x", 0.5))),
+        "focus_y": max(0.0, min(1.0, number("focus_y", 0.5))),
+        "zoom": max(1.0, min(8.0, number("zoom", 1.0))),
+    }
+
+
 class MediaSource:
     def frame(self) -> tuple[Image.Image, float]:
         raise NotImplementedError
@@ -301,7 +318,14 @@ class GifSource(MediaSource):
 
 
 class VideoSource(MediaSource):
-    def __init__(self, path: Path, target: tuple[int, int], fit: str, fps: float):
+    def __init__(
+        self,
+        path: Path,
+        target: tuple[int, int],
+        fit: str,
+        fps: float,
+        framing=None,
+    ):
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             raise RuntimeError("ffmpeg is required for video loops; GIF and still images remain available")
@@ -310,6 +334,7 @@ class VideoSource(MediaSource):
         self.target = target
         self.fit = fit
         self.fps = fps
+        self.framing = normalize_framing(framing)
         self.process = None
         self._start()
 
@@ -321,6 +346,18 @@ class VideoSource(MediaSource):
             return (
                 f"fps={self.fps},scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x07090d"
+            )
+        if self.fit == "manual":
+            focus_x = self.framing["focus_x"]
+            focus_y = self.framing["focus_y"]
+            zoom = self.framing["zoom"]
+            scaled_width = max(width, round(width * zoom))
+            scaled_height = max(height, round(height * zoom))
+            return (
+                f"fps={self.fps},"
+                f"scale={scaled_width}:{scaled_height}:force_original_aspect_ratio=increase,"
+                f"crop={width}:{height}:"
+                f"(iw-ow)*{focus_x:.6f}:(ih-oh)*{focus_y:.6f}"
             )
         return (
             f"fps={self.fps},scale={width}:{height}:force_original_aspect_ratio=increase,"
@@ -379,7 +416,13 @@ class VideoSource(MediaSource):
         self.process = None
 
 
-def open_source(path: Path, layout: str, fit: str, fps: float) -> MediaSource:
+def open_source(
+    path: Path,
+    layout: str,
+    fit: str,
+    fps: float,
+    framing=None,
+) -> MediaSource:
     if not path.is_file():
         raise RuntimeError(f"media source does not exist: {path}")
     target = (TRIPTYCH_W, PANEL_H) if layout == "span" else (PANEL_W, PANEL_H)
@@ -389,21 +432,37 @@ def open_source(path: Path, layout: str, fit: str, fps: float) -> MediaSource:
     if suffix in IMAGE_SUFFIXES:
         return StaticSource(path, target, fit, fps)
     if suffix in VIDEO_SUFFIXES:
-        return VideoSource(path, target, fit, fps)
+        return VideoSource(path, target, fit, fps, framing)
     raise RuntimeError(f"unsupported media type: {suffix or '(none)'}")
 
 
 class PanelSourceSet(MediaSource):
     """Three independent decoders sampled once per synchronized USB update."""
 
-    def __init__(self, paths: list[Path], fit: str, fps: float):
+    def __init__(
+        self,
+        paths: list[Path],
+        fit: str,
+        fps: float,
+        framings=None,
+    ):
         if len(paths) != 3:
             raise RuntimeError("panel layout requires exactly three media sources")
+        if not isinstance(framings, list) or len(framings) != 3:
+            framings = [None, None, None]
         self.sources = []
         try:
-            for path in paths:
+            for column, path in enumerate(paths):
                 # mirror targets one native logical panel without duplicating it.
-                self.sources.append(open_source(path, "mirror", fit, fps))
+                self.sources.append(
+                    open_source(
+                        path,
+                        "mirror",
+                        fit,
+                        fps,
+                        framings[column],
+                    )
+                )
         except Exception:
             self.close()
             raise
@@ -487,6 +546,8 @@ def source_key(state: dict):
         tuple(state.get("sources", [])),
         state.get("layout", "span"),
         state.get("fit", "cover"),
+        json.dumps(state.get("framing", {}), sort_keys=True),
+        json.dumps(state.get("panel_framing", []), sort_keys=True),
         float(state.get("frames_per_second", 8.0)),
     )
 
@@ -568,6 +629,9 @@ def main():
     psutil.cpu_percent(interval=None)
     current_source = None
     current_key = None
+    public_source = None
+    public_key = None
+    next_public_frame = 0.0
     media_retry_after = 0.0
     last_metrics = 0.0
     metrics = collector.collect()
@@ -590,6 +654,75 @@ def main():
             runtime = read_state(state_path())
             state = merged_state(config, runtime)
             now = time.monotonic()
+
+            try:
+                identifying = float(state.get("identify_until", 0.0)) > time.time()
+            except (TypeError, ValueError):
+                identifying = False
+            if state.get("paused", False) or state.get("framing_editing", False) or identifying:
+                if current_source:
+                    current_source.close()
+                    current_source = None
+                current_key = None
+
+                # Do not submit replacement frames while editing. The panels
+                # retain the last displayed framebuffer, so the physical
+                # display stays frozen while draft values are adjusted.
+                time.sleep(0.05)
+                continue
+
+            public_mode = state.get("mode") in {"weather", "external"}
+            if public_mode:
+                if current_source:
+                    current_source.close()
+                    current_source = None
+                current_key = None
+                public_state = dict(state)
+                public_state["panel_order"] = order
+                key = (
+                    public_state.get("mode"),
+                    public_state.get("weather_location", ""),
+                    public_state.get("weather_units", "metric"),
+                    public_state.get("external_directory", ""),
+                    public_state.get("external_refresh_seconds", 1.0),
+                )
+                if key != public_key:
+                    if public_source:
+                        public_source.close()
+                    public_source = (
+                        WeatherDashboard(public_state)
+                        if public_state["mode"] == "weather"
+                        else ExternalFrameSource(public_state)
+                    )
+                    public_key = key
+                    next_public_frame = 0.0
+                if now < next_public_frame:
+                    time.sleep(min(0.2, next_public_frame - now))
+                    continue
+                try:
+                    images, delay = public_source.frame()
+                    packet, encode_metrics = encode_fan_frames(images)
+                    sender.submit(
+                        packet,
+                        0.0,
+                        0.0,
+                        float(encode_metrics.get("encode_seconds", 0.0)),
+                        int(encode_metrics.get("payload_bytes", len(packet))),
+                        False,
+                    )
+                    logged_submit_error = None
+                    next_public_frame = time.monotonic() + delay
+                except Exception as exc:
+                    message = str(exc)
+                    if message != logged_submit_error:
+                        print(f"Public display mode failed: {message}")
+                        logged_submit_error = message
+                    next_public_frame = time.monotonic() + 2.0
+                continue
+            if public_source:
+                public_source.close()
+                public_source = None
+            public_key = None
             if now - last_metrics >= 2.0:
                 metrics = collector.collect()
                 history.push(metrics)
@@ -614,10 +747,19 @@ def main():
                         fit = str(state.get("fit", "cover"))
                         if layout == "panels":
                             current_source = PanelSourceSet(
-                                [Path(path) for path in state.get("sources", [])], fit, fps
+                                [Path(path) for path in state.get("sources", [])],
+                                fit,
+                                fps,
+                                state.get("panel_framing"),
                             )
                         else:
-                            current_source = open_source(Path(state["source"]), layout, fit, fps)
+                            current_source = open_source(
+                                Path(state["source"]),
+                                layout,
+                                fit,
+                                fps,
+                                state.get("framing"),
+                            )
                         current_key = key
                         logged_media_error = None
                         sender.reset_performance()
@@ -715,6 +857,8 @@ def main():
     finally:
         if current_source:
             current_source.close()
+        if public_source:
+            public_source.close()
         sender.stop()
 
 

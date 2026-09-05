@@ -1,0 +1,17 @@
+[Unit]
+Description=Jonsbo ZC-360 socket-only media renderer
+After=graphical-session.target jonsbo-fan-daemon.service
+# Deliberately no Wants=/Requires=: a renderer must never launch or reclaim
+# the USB owner. The daemon starts only at the normal user-session boundary.
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/.local/share/jonsbo-zc360/venv/bin/zc360-renderer
+UMask=0077
+# Safe to restart: this process only uses the owner daemon's Unix socket.
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

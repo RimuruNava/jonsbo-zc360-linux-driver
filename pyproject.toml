@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jonsbo-zc360"
+version = "0.4.0"
+description = "Unofficial Linux userspace driver for Jonsbo ZC-360 fan LCDs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Lucille Hon" }]
+dependencies = [
+  "libusb1>=3.1",
+  "Pillow>=10",
+  "pycryptodome>=3.20",
+  "pyusb>=1.2",
+  "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+surface = ["psutil>=5.9"]
+gui = ["PySide6>=6.8"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+zc360ctl = "zc360.cli:main"
+zc360d = "zc360.daemon:main"
+zc360-renderer = "zc360.renderer:main"
+zc360-gui = "zc360.gui:main"
+
+[tool.setuptools]
+packages = ["zc360"]
+py-modules = ["jonsbo_fan_lib", "zc360_async_transport"]
+
+[tool.setuptools.package-dir]
+zc360 = "src/zc360"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

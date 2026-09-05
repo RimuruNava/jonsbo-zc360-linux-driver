@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ZC-360 Control
+Comment=Control media on Jonsbo ZC-360 fan displays
+Exec=zc360-gui
+Icon=io.github.jonsbo_zc360.Control
+Terminal=false
+Categories=Utility;Settings;
+Keywords=Jonsbo;ZC-360;LCD;fan;display;
+StartupNotify=true

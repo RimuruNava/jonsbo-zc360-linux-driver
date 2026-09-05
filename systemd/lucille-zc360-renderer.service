@@ -5,7 +5,8 @@ After=graphical-session.target jonsbo-fan-daemon.service
 [Service]
 WorkingDirectory=%h/Projects/jonsbo-zc360-driver
 Environment=PYTHONUNBUFFERED=1
-ExecStart=%h/Projects/jonsbo-zc360-driver/.venv/bin/python3 %h/Projects/jonsbo-zc360-driver/lucille_zc360_surface.py
+ExecStart=%h/.local/share/jonsbo-zc360/venv/bin/python3 %h/Projects/jonsbo-zc360-driver/lucille_zc360_surface.py
+UMask=0077
 # This process only uses the local socket. It never claims or releases USB,
 # so restarting it cannot trigger the panel firmware's claim-cycle failure.
 Restart=on-failure

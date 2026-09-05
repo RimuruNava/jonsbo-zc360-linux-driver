@@ -44,6 +44,19 @@ TF3 360, TF3-360SCB, TF3-360SCW, TURZX-338inch-r, USB `43a8:0e61`.
 >
 > The older threaded PyUSB "vendor triplet" experiment is retained for
 > research history but is explicitly unsafe.
+>
+> The driver is packaged as `jonsbo-zc360` with a standalone Qt control app,
+> the socket-only media/dashboard `zc360-renderer`, and the `zc360d` /
+> `zc360ctl` entry points.
+> IPC v1 adds bounded requests, structured errors, daemon and
+> panel status, and a safe fallback for renderers talking to the checkpoint
+> daemon during migration.
+>
+> The package and IPC refactor passed its first live boot acceptance test on
+> 2026-09-05: all three serial-identified panels were ready, IPC v1 reported
+> async triplets around 61.5-63.8 ms, and every controller remained at
+> `0x62/0x62/0x62`. Version 0.2.1 changes only log rate limiting after that
+> acceptance run; the validated USB scheduler remains byte-identical.
 
 Not affiliated with or endorsed by Jonsbo. Provided as-is, without warranty.
 See [LICENSE](LICENSE).
@@ -102,10 +115,10 @@ separate USB device and is not the primary target of this project.
 
 ## What's here
 
-- `jonsbo_fan_lib.py` — core ZC-360 protocol implementation, command channel,
-  frame encoding and known-good serial framebuffer path.
-- `jonsbo_fan_daemon.py` — persistent USB owner. Claims all three displays
-  once and accepts frames through a Unix socket.
+- `src/zc360/` — packaged protocol, framebuffer, IPC, daemon, CLI, lifecycle,
+  shared state, generic display renderer, Qt GUI, and validated-transport facade.
+- `jonsbo_fan_lib.py` and `jonsbo_fan_daemon.py` — compatibility API and
+  launcher for existing renderers and research commands.
 - `async_triplet_probe.py` — genuine asynchronous `python-libusb1` transport
   prototype based on the official Windows scheduling model.
 - `vendor_triplet.py` — **unsafe historical experiment** using Python threads
@@ -119,6 +132,9 @@ separate USB device and is not the primary target of this project.
 - `docs/ZC360_PROTOCOL_RESEARCH.md` — cleaner technical protocol reference.
 - `docs/ZC360_EXPERIMENT_LOG.md` — chronological record of the experiments,
   failed approaches and conclusions that changed along the way.
+- `docs/ARCHITECTURE.md` — safety invariants and package/IPC boundaries.
+- `docs/MIGRATION.md` — installation without reclaiming a running controller.
+- `tests/` — hardware-blind protocol, framebuffer, IPC, and daemon-control tests.
 - `systemd/` — user service templates.
 - `udev/` — non-root USB access rules.
 
@@ -388,16 +404,106 @@ The full chronological story is in:
 git clone https://github.com/RimuruNava/jonsbo-zc360-linux-driver.git
 cd jonsbo-zc360-linux-driver
 
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-
-sudo cp udev/99-jonsbo-zc360.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-sudo udevadm trigger
+./scripts/install-user.sh
+./scripts/install-udev.sh
+zc360ctl doctor
 ```
 
-Unplug/replug the ZC-360 USB connection or reboot after installing the udev
-rule so the permissions take effect.
+The user installer creates the project venv, installs the package and CLI,
+GUI, copies and enables the service units, and deliberately does not start or
+restart any service. On a new setup it enables the generic display renderer. If
+the Lucille renderer was already enabled, it preserves that frontend instead;
+both consume the same display state. The udev installer reloads the access rule without
+triggering a reconnect. Let the packaged owner take over at the next normal
+boot instead of restarting the current owner in place. See
+[`docs/MIGRATION.md`](docs/MIGRATION.md).
+
+Video playback uses `ffmpeg`; install it through your distribution if it is
+not already available. Stills and GIFs do not require it.
+
+There is no practical MP4 duration limit. Videos are decoded by `ffmpeg` and
+loop continuously, so a short animation and a multi-hour file use the same
+playback path. Storage space, codec support, and decoding cost are the real
+constraints. Because each panel receives a 640x180 image and the driver tops
+out at 20 FPS, very high source resolutions or frame rates provide no display
+benefit. An ordinary H.264 MP4 at about 20 FPS is a sensible default. Some files
+may show a tiny pause when they seek back to the beginning of the loop.
+
+### Open the GUI
+
+After the next normal login or boot, launch **ZC-360 Control** from the
+application menu or run:
+
+```bash
+zc360-gui
+```
+
+Choose a **Display mode** at the top of the app. It supports:
+
+- one still, GIF, or video spanning all three displays;
+- one source mirrored to every display;
+- three independent sources, one per physical position;
+- cover, contain, stretch, and draggable manual crop/zoom;
+- built-in CPU, temperature, memory, disk, network, uptime, and clock telemetry;
+- current weather plus today/tomorrow forecasts in metric or imperial units;
+- image frames from another telemetry program, without executing its code;
+- persistent FPS and physical panel-order settings;
+- pause/resume, temporary labelled panel identification, blank, and
+  stop-rendering controls.
+
+The intended workflow is: choose a mode, fill in that mode's visible settings,
+frame media if needed, then select **Apply & Play** or **Apply display mode**.
+The three Edit buttons only appear for media. **Identify panels** displays USB
+panel numbers for four seconds and automatically restores the previous mode.
+The **Help** button includes the same steps and recovery notes inside the app.
+
+Weather uses the Open-Meteo forecast and geocoding APIs. The renderer caches
+weather requests for fifteen minutes. Network failures leave the previous
+frame on the displays and are retried without touching USB ownership.
+
+To connect a custom telemetry collector, select **External telemetry frames**
+and point the GUI at a folder containing either `triptych.png` or all three of
+`panel-0.png`, `panel-1.png`, and `panel-2.png`. See
+[`docs/EXTERNAL_TELEMETRY.md`](docs/EXTERNAL_TELEMETRY.md) for the dimensions,
+mapping, and atomic-update example.
+
+Closing the GUI does not stop playback. `zc360-renderer` watches the shared
+atomic state at `~/.config/zc360/display.json` and continues in the background.
+The GUI and renderer never open a USB device.
+
+If an older build leaves panel labels displayed, run:
+
+```bash
+zc360ctl resume
+```
+
+Then correct any missing or mistyped source shown at the bottom of the GUI and
+apply the mode again. Display changes do not require restarting `zc360d`.
+
+### Command-line control
+
+The same generic frontend is available without the GUI:
+
+```bash
+zc360ctl play animation.gif --layout span --fit cover --fps 12
+zc360ctl play-panels left.png centre.gif right.mp4 --fit contain
+zc360ctl pause
+zc360ctl resume
+zc360ctl display-status
+zc360ctl blank
+zc360ctl idle
+```
+
+Manual framing is transactional so the physical framebuffer stays frozen
+while values are edited:
+
+```bash
+zc360ctl framing --begin
+zc360ctl framing --focus-x 0.70 --focus-y 0.45 --zoom 1.5
+zc360ctl framing --apply
+```
+
+Use `--panel 0`, `1`, or `2` when editing a three-source layout.
 
 ### Find your panel mapping
 
@@ -406,7 +512,7 @@ Physical left/centre/right mapping is machine-specific.
 With the daemon already running:
 
 ```bash
-.venv/bin/python3 examples/send_test_via_daemon.py
+zc360ctl test-pattern
 ```
 
 Copy:
@@ -430,7 +536,8 @@ machine-specific panel serial numbers.
 
 ## Running it
 
-The current setup is documented in:
+The public frontend is the `zc360-gui` / `zc360-renderer` pair described
+above. Lucille's optional telemetry and shell-event frontend is documented in:
 
 [`LUCILLE-ZC360.md`](LUCILLE-ZC360.md)
 
@@ -491,6 +598,8 @@ of publishing only the final answer.
 
 ## Credits
 
+Made by **Lucille Hon** 💗
+
 This project builds on earlier Linux reverse-engineering work for the Jonsbo /
 TURZX display protocol, including the original driver this ZC-360 adaptation
 started from.
@@ -538,9 +647,9 @@ On a real cold boot / physical power cycle, the observed sequence is:
 
 1. the panel firmware briefly shows the factory **Jonsbo** logo
 2. the Linux USB owner claims and initializes the three controllers
-3. the Lucille startup/telemetry surface appears and remains visible at the login screen
+3. the configured ZC-360 surface appears and remains visible at the login screen
 4. after the user logs in, the renderer starts as part of the user session
-5. the configured media loops replace the telemetry surface roughly **2–3 seconds** later
+5. the configured media loop resumes roughly **2–3 seconds** later
 
 That sequence is also a useful diagnostic:
 

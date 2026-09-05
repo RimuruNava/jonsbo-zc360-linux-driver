@@ -31,12 +31,9 @@ socket and may be restarted freely.
 ```bash
 cd ~/Projects/jonsbo-zc360-driver
 
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-
-sudo cp udev/99-jonsbo-tf3.rules /etc/udev/rules.d/70-jonsbo-zc360.rules
-sudo udevadm control --reload-rules
-sudo udevadm trigger --attr-match=idVendor=43a8 --attr-match=idProduct=0e61
+./scripts/install-user.sh
+./scripts/install-udev.sh
+zc360ctl doctor
 ```
 
 Dependency installation and the udev rule do not send panel commands. Do not
@@ -48,7 +45,7 @@ Run the owner once in a terminal and leave it running:
 
 ```bash
 cd ~/Projects/jonsbo-zc360-driver
-.venv/bin/python3 jonsbo_fan_daemon.py
+~/.local/share/jonsbo-zc360/venv/bin/zc360d
 ```
 
 It refuses to claim anything unless all three devices are present. When it
@@ -58,7 +55,7 @@ In a second terminal:
 
 ```bash
 cd ~/Projects/jonsbo-zc360-driver
-.venv/bin/python3 examples/send_test_via_daemon.py
+zc360ctl test-pattern
 ```
 
 This client uses only the local socket. It does not open or release USB.
@@ -95,7 +92,7 @@ Preview all three panels without opening the socket or importing PyUSB:
 
 ```bash
 cd ~/Projects/jonsbo-zc360-driver
-.venv/bin/python3 lucille_zc360_renderer.py \
+~/.local/share/jonsbo-zc360/venv/bin/python3 lucille_zc360_renderer.py \
     --preview-dir /tmp/lucille-zc360-preview
 ```
 
@@ -108,7 +105,7 @@ order in `zc360-layout.json`:
 ```bash
 cd ~/Projects/jonsbo-zc360-driver
 
-.venv/bin/python3 lucille_zc360_control.py play \
+~/.local/share/jonsbo-zc360/venv/bin/python3 lucille_zc360_control.py play \
     ~/Videos/panel-loop.mp4 \
     --layout span \
     --fit cover \
@@ -123,7 +120,7 @@ prevents the renderer from queuing frames faster than the hardware accepts.
 Mirror the same 640x180 composition on every panel:
 
 ```bash
-.venv/bin/python3 lucille_zc360_control.py play \
+~/.local/share/jonsbo-zc360/venv/bin/python3 lucille_zc360_control.py play \
     ~/Pictures/panel-loop.gif \
     --layout mirror \
     --fit contain \
@@ -134,7 +131,7 @@ Loop three different sources in the confirmed physical left, centre, and right
 order:
 
 ```bash
-.venv/bin/python3 lucille_zc360_control.py play-panels \
+~/.local/share/jonsbo-zc360/venv/bin/python3 lucille_zc360_control.py play-panels \
     ~/Videos/left.mp4 \
     ~/Videos/centre.gif \
     ~/Videos/right.mp4 \
@@ -168,22 +165,23 @@ does not require restarting the USB owner.
 Switch back to the diagnostic surface or inspect current state:
 
 ```bash
-.venv/bin/python3 lucille_zc360_control.py telemetry
-.venv/bin/python3 lucille_zc360_control.py status
+~/.local/share/jonsbo-zc360/venv/bin/python3 lucille_zc360_control.py telemetry
+~/.local/share/jonsbo-zc360/venv/bin/python3 lucille_zc360_control.py status
 ```
 
 Lucille Shell can use the same stable command path for a short interruption:
 
 ```bash
-.venv/bin/python3 lucille_zc360_control.py overlay \
+~/.local/share/jonsbo-zc360/venv/bin/python3 lucille_zc360_control.py overlay \
     CHAT \
     --detail 'LAYER ACTIVE' \
     --ttl 2.4 \
     --accent pink
 ```
 
-Media selection persists in
-`~/.config/lucille-shell/zc360-display.json`. A temporary overlay does not
+Media selection persists in `~/.config/zc360/display.json`. Version 0.3
+migrates the previous `~/.config/lucille-shell/zc360-display.json`
+automatically. A temporary overlay does not
 replace the selected loop. Critical CPU/GPU temperatures use the same
 interruption layer in restrained yellow and then return to the media.
 

@@ -7,7 +7,7 @@ After=graphical-session.target jonsbo-fan-daemon.service
 [Service]
 WorkingDirectory=%h/Projects/jonsbo-zc360-driver
 Environment=PYTHONUNBUFFERED=1
-ExecStart=%h/Projects/jonsbo-zc360-driver/.venv/bin/python3 %h/Projects/jonsbo-zc360-driver/jonsbo_monitor.py
+ExecStart=%h/.local/share/jonsbo-zc360/venv/bin/python3 %h/Projects/jonsbo-zc360-driver/jonsbo_monitor.py
 # Safe to restart freely - this process never claims fan-panel USB
 # interfaces directly, only jonsbo-fan-daemon.service does. See README.md.
 Restart=no

@@ -3,3 +3,4 @@ pycryptodome
 Pillow
 psutil
 libusb1
+PySide6>=6.8
